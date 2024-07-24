@@ -8,15 +8,23 @@ git apply -p1 -v "../llvm-build/65536.diff"
 git apply -p1 -v "../llvm-build/73617.diff"
 git apply -p1 -v "../llvm-build/158450.diff"
 
-git clone https://github.com/Arthapz/clangd-for-modules --depth 1 $"($env.TEMP)/clangd"
-rm -rf clang-tools-extra/clangd
-cp -r $"($env.TEMP)/clang-tools-extra/clangd" clang-tools-extra/
+let clangd_dir = $"($env.TEMP)/clangd"
+if ($clangd_dir | path exists) {
+let current_path = $env.PWD
+    cd $clangd_dir
+    git pull
+    cd $current_path
+} else {
+    git clone https://github.com/Arthapz/clangd-for-modules --depth 1 $clangd_dir
+    rm -rf clang-tools-extra/clangd
+    cp -r $"($clangd_dir)/clang-tools-extra/clangd" clang-tools-extra/
+}
 
 cd ../llvm-build/
 
 (cmake
   -G Ninja
-  -S "../llvm-project"
+  -S "../llvm-project/llvm"
   -B build
   -D CMAKE_BUILD_TYPE=Release
   -D CMAKE_INSTALL_PREFIX="F:/llvm-19/"
@@ -25,9 +33,7 @@ cd ../llvm-build/
   -D LLVM_ENABLE_RTTI=ON
   -D LLVM_ENABLE_FFI=ON
   -D LLVM_ENABLE_BINDINGS=OFF
-  -D LLVM_BUILD_LLVM_DYLIB=ON
   -D LLVM_ENABLE_WARNINGS=OFF
-  -D LLVM_LINK_LLVM_DYLIB=ON
   -D LLVM_INSTALL_UTILS=ON
   -D LLVM_BUILD_DOCS=OFF
   -D LLVM_ENABLE_DOXYGEN=OFF
@@ -37,7 +43,7 @@ cd ../llvm-build/
   -D POLLY_ENABLE_GPGPU_CODEGEN=ON
   -D LLDB_USE_SYSTEM_SIX=1
   -D LLVM_ENABLE_PROJECTS="polly;lldb;lld;clang;clang-tools-extra"
-  -D LLVM_ENABLE_RUNTIMES="libunwind;libcxx;libcxxabi"
+  -D LLVM_ENABLE_RUNTIMES="compiler-rt;libunwind;libcxx;libcxxabi"
   -D LLVM_ENABLE_LTO=OFF
   -D LLVM_LIT_ARGS="-sv --ignore-fail"
   -D LLVM_ENABLE_DUMP=ON

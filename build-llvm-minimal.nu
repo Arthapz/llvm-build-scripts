@@ -1,6 +1,7 @@
 cd ../llvm-project
 git clean -dxf
 git reset --hard
+git submodule update --init
 git pull
 
 git apply -p1 -v "../llvm-build/65200.diff"

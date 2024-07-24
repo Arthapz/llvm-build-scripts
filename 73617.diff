@@ -1,0 +1,3197 @@
+diff --git a/libcxx/include/CMakeLists.txt b/libcxx/include/CMakeLists.txt
+index 1296c536bc882..8d9c5f2fcf66d 100644
+--- a/libcxx/include/CMakeLists.txt
++++ b/libcxx/include/CMakeLists.txt
+@@ -649,6 +649,7 @@ set(files
+   __ranges/empty_view.h
+   __ranges/enable_borrowed_range.h
+   __ranges/enable_view.h
++  __ranges/enumerate_view.h
+   __ranges/filter_view.h
+   __ranges/from_range.h
+   __ranges/iota_view.h
+diff --git a/libcxx/include/__ranges/enumerate_view.h b/libcxx/include/__ranges/enumerate_view.h
+new file mode 100644
+index 0000000000000..427463991b4bd
+--- /dev/null
++++ b/libcxx/include/__ranges/enumerate_view.h
+@@ -0,0 +1,342 @@
++// -*- C++ -*-
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef _LIBCPP___RANGES_ENUMERATE_VIEW_H
++#define _LIBCPP___RANGES_ENUMERATE_VIEW_H
++
++#include <__concepts/convertible_to.h>
++#include <__config>
++#include <__iterator/concepts.h>
++#include <__iterator/distance.h>
++#include <__iterator/iter_move.h>
++#include <__iterator/iterator_traits.h>
++#include <__ranges/access.h>
++#include <__ranges/all.h>
++#include <__ranges/concepts.h>
++#include <__ranges/enable_borrowed_range.h>
++#include <__ranges/range_adaptor.h>
++#include <__ranges/size.h>
++#include <__ranges/view_interface.h>
++#include <__type_traits/maybe_const.h>
++#include <__utility/forward.h>
++#include <__utility/move.h>
++#include <tuple>
++
++#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
++#  pragma GCC system_header
++#endif
++
++_LIBCPP_BEGIN_NAMESPACE_STD
++
++#if _LIBCPP_STD_VER >= 23
++
++namespace ranges {
++
++// [concept.object]
++
++template <class _Rp>
++concept __range_with_movable_references =
++    input_range<_Rp> && std::move_constructible<range_reference_t<_Rp>> &&
++    std::move_constructible<range_rvalue_reference_t<_Rp>>;
++
++// [range.enumerate.view]
++
++template <view _View>
++  requires __range_with_movable_references<_View>
++class enumerate_view : public view_interface<enumerate_view<_View>> {
++  _View __base_ = _View();
++
++  // [range.enumerate.iterator]
++  template <bool _Const>
++  class __iterator;
++
++  // [range.enumerate.sentinel]
++  template <bool _Const>
++  class __sentinel;
++
++public:
++  _LIBCPP_HIDE_FROM_ABI constexpr enumerate_view()
++    requires default_initializable<_View>
++  = default;
++  _LIBCPP_HIDE_FROM_ABI constexpr explicit enumerate_view(_View __base) : __base_(std::move(__base)){};
++
++  _LIBCPP_HIDE_FROM_ABI constexpr auto begin()
++    requires(!__simple_view<_View>)
++  {
++    return __iterator<false>(ranges::begin(__base_), 0);
++  }
++  _LIBCPP_HIDE_FROM_ABI constexpr auto begin() const
++    requires __range_with_movable_references<const _View>
++  {
++    return __iterator<true>(ranges::begin(__base_), 0);
++  }
++
++  _LIBCPP_HIDE_FROM_ABI constexpr auto end()
++    requires(!__simple_view<_View>)
++  {
++    if constexpr (common_range<_View> && sized_range<_View>)
++      return __iterator<false>(ranges::end(__base_), ranges::distance(__base_));
++    else
++      return __sentinel<false>(ranges::end(__base_));
++  }
++  _LIBCPP_HIDE_FROM_ABI constexpr auto end() const
++    requires __range_with_movable_references<const _View>
++  {
++    if constexpr (common_range<const _View> && sized_range<const _View>)
++      return __iterator<true>(ranges::end(__base_), ranges::distance(__base_));
++    else
++      return __sentinel<true>(ranges::end(__base_));
++  }
++
++  _LIBCPP_HIDE_FROM_ABI constexpr auto size()
++    requires sized_range<_View>
++  {
++    return ranges::size(__base_);
++  }
++  _LIBCPP_HIDE_FROM_ABI constexpr auto size() const
++    requires sized_range<const _View>
++  {
++    return ranges::size(__base_);
++  }
++
++  _LIBCPP_HIDE_FROM_ABI constexpr _View base() const&
++    requires copy_constructible<_View>
++  {
++    return __base_;
++  }
++  _LIBCPP_HIDE_FROM_ABI constexpr _View base() && { return std::move(__base_); }
++};
++
++template <class _Range>
++enumerate_view(_Range&&) -> enumerate_view<views::all_t<_Range>>;
++
++// [range.enumerate.iterator]
++
++template <view _View>
++  requires __range_with_movable_references<_View>
++template <bool _Const>
++class enumerate_view<_View>::__iterator {
++  using _Base = __maybe_const<_Const, _View>;
++
++  static consteval auto __get_iterator_concept() {
++    if constexpr (random_access_range<_Base>) {
++      return random_access_iterator_tag{};
++    } else if constexpr (bidirectional_range<_Base>) {
++      return bidirectional_iterator_tag{};
++    } else if constexpr (forward_range<_Base>) {
++      return forward_iterator_tag{};
++    } else {
++      return input_iterator_tag{};
++    }
++  }
++
++  friend class enumerate_view<_View>;
++
++public:
++  using iterator_category = input_iterator_tag;
++  using iterator_concept  = decltype(__get_iterator_concept());
++  using difference_type   = range_difference_t<_Base>;
++  using value_type        = tuple<difference_type, range_value_t<_Base>>;
++
++private:
++  using __reference_type       = tuple<difference_type, range_reference_t<_Base>>;
++  iterator_t<_Base> __current_ = iterator_t<_Base>();
++  difference_type __pos_       = 0;
++
++  _LIBCPP_HIDE_FROM_ABI constexpr explicit __iterator(iterator_t<_Base> __current, difference_type __pos)
++      : __current_(std::move(__current)), __pos_(__pos) {}
++
++public:
++  _LIBCPP_HIDE_FROM_ABI __iterator()
++    requires default_initializable<iterator_t<_Base>>
++  = default;
++
++  _LIBCPP_HIDE_FROM_ABI constexpr __iterator(__iterator<!_Const> __i)
++    requires _Const && convertible_to<iterator_t<_View>, iterator_t<_Base>>
++      : __current_(std::move(__i.__current_)), __pos_(__i.__pos_) {}
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr const iterator_t<_Base>& base() const& noexcept { return __current_; }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr iterator_t<_Base> base() && { return std::move(__current_); }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr difference_type index() const noexcept { return __pos_; }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr auto operator*() const { return __reference_type(__pos_, *__current_); }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator& operator++() {
++    ++__current_;
++    ++__pos_;
++    return *this;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr void operator++(int) { return ++*this; }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator operator++(int)
++    requires forward_range<_Base>
++  {
++    auto __temp = *this;
++    ++*this;
++    return __temp;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator& operator--()
++    requires bidirectional_range<_Base>
++  {
++    --__current_;
++    --__pos_;
++    return *this;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator operator--(int)
++    requires bidirectional_range<_Base>
++  {
++    auto __temp = *this;
++    --*this;
++    return *__temp;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator& operator+=(difference_type __n)
++    requires random_access_range<_Base>
++  {
++    __current_ += __n;
++    __pos_ += __n;
++    return *this;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr __iterator& operator-=(difference_type __n)
++    requires random_access_range<_Base>
++  {
++    __current_ -= __n;
++    __pos_ -= __n;
++    return *this;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr auto operator[](difference_type __n) const
++    requires random_access_range<_Base>
++  {
++    return __reference_type(__pos_ + __n, __current_[__n]);
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr bool
++  operator==(const __iterator& __x, const __iterator& __y) noexcept {
++    return __x.__pos_ == __y.__pos_;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr strong_ordering
++  operator<=>(const __iterator& __x, const __iterator& __y) noexcept {
++    return __x.__pos_ <=> __y.__pos_;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr __iterator operator+(const __iterator& __i, difference_type __n)
++    requires random_access_range<_Base>
++  {
++    auto __temp = __i;
++    __temp += __n;
++    return __temp;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr __iterator operator+(difference_type __n, const __iterator& __i)
++    requires random_access_range<_Base>
++  {
++    return __i + __n;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr __iterator operator-(const __iterator& __i, difference_type __n)
++    requires random_access_range<_Base>
++  {
++    auto __temp = __i;
++    __temp -= __n;
++    return __temp;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr difference_type
++  operator-(const __iterator& __x, const __iterator& __y) noexcept {
++    return __x.__pos_ - __y.__pos_;
++  }
++
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr auto iter_move(const __iterator& __i) noexcept(
++      noexcept(ranges::iter_move(__i.__current_)) && is_nothrow_move_constructible_v<range_rvalue_reference_t<_Base>>) {
++    return tuple<difference_type, range_rvalue_reference_t<_Base>>(__i.__pos_, ranges::iter_move(__i.__current_));
++  }
++};
++
++// [range.enumerate.sentinel]
++
++template <view _View>
++  requires __range_with_movable_references<_View>
++template <bool _Const>
++class enumerate_view<_View>::__sentinel {
++  using _Base              = __maybe_const<_Const, _View>;
++  sentinel_t<_Base> __end_ = sentinel_t<_Base>();
++
++  _LIBCPP_HIDE_FROM_ABI constexpr explicit __sentinel(sentinel_t<_Base> __end) : __end_(std::move(__end)) {}
++
++  friend class enumerate_view<_View>;
++
++public:
++  _LIBCPP_HIDE_FROM_ABI __sentinel() = default;
++
++  _LIBCPP_HIDE_FROM_ABI constexpr __sentinel(__sentinel<!_Const> __other)
++    requires _Const && convertible_to<sentinel_t<_View>, sentinel_t<_Base>>
++      : __end_(std::move(__other.__end_)) {}
++
++  _LIBCPP_HIDE_FROM_ABI  constexpr sentinel_t<_Base> base() const { return __end_; }
++
++  template <bool _OtherConst>
++    requires sentinel_for<sentinel_t<_Base>, iterator_t<__maybe_const<_OtherConst, _View>>>
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr bool
++  operator==(const __iterator<_OtherConst>& __x, const __sentinel& __y) {
++    return __x.__current_ == __y.__end_;
++  }
++
++  template <bool _OtherConst>
++    requires sized_sentinel_for<sentinel_t<_Base>, iterator_t<__maybe_const<_OtherConst, _View>>>
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr range_difference_t<__maybe_const<_OtherConst, _View>>
++  operator-(const __iterator<_OtherConst>& __x, const __sentinel& __y) {
++    return __x.__current_ - __y.__end_;
++  }
++
++  template <bool _OtherConst>
++    requires sized_sentinel_for<sentinel_t<_Base>, iterator_t<__maybe_const<_OtherConst, _View>>>
++  _LIBCPP_HIDE_FROM_ABI  friend constexpr range_difference_t<__maybe_const<_OtherConst, _View>>
++  operator-(const __sentinel& __x, const __iterator<_OtherConst>& __y) {
++    return __x.__end_ - __y.__current_;
++  }
++};
++
++template <class _View>
++constexpr bool enable_borrowed_range<enumerate_view<_View>> = enable_borrowed_range<_View>;
++
++namespace views {
++namespace __enumerate {
++
++struct __fn : __range_adaptor_closure<__fn> {
++  template <class _Range>
++   _LIBCPP_HIDE_FROM_ABI constexpr auto operator()(_Range&& __range) const
++      noexcept(noexcept(/**/ enumerate_view(std::forward<_Range>(__range))))
++          -> decltype(/*--*/ enumerate_view(std::forward<_Range>(__range))) {
++    return /*-------------*/ enumerate_view(std::forward<_Range>(__range));
++  }
++};
++
++} // namespace __enumerate
++
++inline namespace __cpo {
++
++inline constexpr auto enumerate = __enumerate::__fn{};
++
++} // namespace __cpo
++} // namespace views
++} // namespace ranges
++
++#endif // _LIBCPP_STD_VER >= 23
++
++_LIBCPP_END_NAMESPACE_STD
++
++#endif // _LIBCPP___RANGES_ENUMERATE_VIEW_H
+diff --git a/libcxx/include/module.modulemap b/libcxx/include/module.modulemap
+index 8727ab88f16c0..be3ef5565a24d 100644
+--- a/libcxx/include/module.modulemap
++++ b/libcxx/include/module.modulemap
+@@ -1695,6 +1695,7 @@ module std_private_ranges_empty                      [system] { header "__ranges
+ module std_private_ranges_empty_view                 [system] { header "__ranges/empty_view.h" }
+ module std_private_ranges_enable_borrowed_range      [system] { header "__ranges/enable_borrowed_range.h" }
+ module std_private_ranges_enable_view                [system] { header "__ranges/enable_view.h" }
++module std_private_ranges_enumerate_view             [system] { header "__ranges/enumerate_view.h" }
+ module std_private_ranges_filter_view                [system] {
+   header "__ranges/filter_view.h"
+   export std_private_ranges_range_adaptor
+diff --git a/libcxx/include/ranges b/libcxx/include/ranges
+index 07a525ed8641f..42f0d104496d6 100644
+--- a/libcxx/include/ranges
++++ b/libcxx/include/ranges
+@@ -319,6 +319,17 @@ namespace std::ranges {
+ 
+   namespace views { template<class T> inline constexpr unspecified istream = unspecified; }
+ 
++  // [range.enumerate], enumerate view
++  template<view View>
++    requires see below
++  class enumerate_view;                                                             // since C++23
++
++  template<class View>
++    constexpr bool enable_borrowed_range<enumerate_view<View>> =                    // since C++23
++      enable_borrowed_range<View>;
++
++  namespace views { inline constexpr unspecified enumerate = unspecified; }         // since C++23
++
+   // [range.zip], zip view
+   template<input_range... Views>
+     requires (view<Views> && ...) && (sizeof...(Views) > 0)
+@@ -397,6 +408,7 @@ namespace std {
+ #  include <__ranges/empty_view.h>
+ #  include <__ranges/enable_borrowed_range.h>
+ #  include <__ranges/enable_view.h>
++#  include <__ranges/enumerate_view.h>
+ #  include <__ranges/filter_view.h>
+ #  include <__ranges/iota_view.h>
+ #  include <__ranges/join_view.h>
+diff --git a/libcxx/include/version b/libcxx/include/version
+index 0ed77345baa71..16c142a5778c2 100644
+--- a/libcxx/include/version
++++ b/libcxx/include/version
+@@ -190,6 +190,7 @@ __cpp_lib_ranges_chunk                                  202202L <ranges>
+ __cpp_lib_ranges_chunk_by                               202202L <ranges>
+ __cpp_lib_ranges_concat                                 202403L <ranges>
+ __cpp_lib_ranges_contains                               202207L <algorithm>
++__cpp_lib_ranges_enumerate                              202302L <ranges>
+ __cpp_lib_ranges_find_last                              202207L <algorithm>
+ __cpp_lib_ranges_iota                                   202202L <numeric>
+ __cpp_lib_ranges_join_with                              202202L <ranges>
+@@ -487,6 +488,7 @@ __cpp_lib_within_lifetime                               202306L <type_traits>
+ // # define __cpp_lib_ranges_chunk                         202202L
+ # define __cpp_lib_ranges_chunk_by                      202202L
+ # define __cpp_lib_ranges_contains                      202207L
++# define __cpp_lib_ranges_enumerate                     202302L
+ # define __cpp_lib_ranges_find_last                     202207L
+ // # define __cpp_lib_ranges_iota                          202202L
+ # define __cpp_lib_ranges_join_with                     202202L
+diff --git a/libcxx/modules/std/ranges.inc b/libcxx/modules/std/ranges.inc
+index 80f31c79a1a40..2507ae00b4a57 100644
+--- a/libcxx/modules/std/ranges.inc
++++ b/libcxx/modules/std/ranges.inc
+@@ -346,7 +345,16 @@ export namespace std {
+     namespace views {
+       using std::ranges::views::cartesian_product;
+     }
+ #endif
++
++#if _LIBCPP_STD_VER >= 23
++    // [range.enumerate]
++    using std::ranges::enumerate_view;
++
++    namespace views {
++      using std::ranges::views::enumerate;
++    }
++#endif // _LIBCPP_STD_VER >= 23
+   } // namespace ranges
+ 
+   namespace views = ranges::views;
+diff --git a/libcxx/test/std/ranges/iterator_robust_against_adl.compile.pass.cpp b/libcxx/test/std/ranges/iterator_robust_against_adl.compile.pass.cpp
+index 5efd6c72a13db..9070fddae7238 100644
+--- a/libcxx/test/std/ranges/iterator_robust_against_adl.compile.pass.cpp
++++ b/libcxx/test/std/ranges/iterator_robust_against_adl.compile.pass.cpp
+@@ -75,4 +75,5 @@ static_assert(!CanFindADLFunc<std::ranges::transform_view<adl::BaseView, adl::Pr
+ 
+ #if TEST_STD_VER >= 23
+ static_assert(!CanFindADLFunc<std::ranges::zip_view<adl::BaseView>>);
++static_assert(!CanFindADLFunc<std::ranges::enumerate_view<adl::BaseView>>);
+ #endif
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/adaptor.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/adaptor.pass.cpp
+new file mode 100644
+index 0000000000000..9992c80923df7
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/adaptor.pass.cpp
+@@ -0,0 +1,131 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// std::views::enumerate;
++
++#include <algorithm>
++#include <cassert>
++#include <ranges>
++#include <string_view>
++
++#include "types.h"
++
++// Concepts
++
++template <class View, class T>
++concept CanBePiped = requires(View&& view, T&& t) {
++  { std::forward<View>(view) | std::forward<T>(t) };
++};
++
++template <class Range>
++concept CanEnumerate = requires(Range&& range) { std::views::enumerate(std::forward<Range>(range)); };
++
++// Helpers
++
++struct ImmovableReference {
++  ImmovableReference(ImmovableReference&&) = delete;
++
++  operator int();
++};
++
++struct IteratorWithImmovableReferences {
++  using value_type      = int;
++  using difference_type = std::ptrdiff_t;
++
++  ImmovableReference operator*() const;
++  IteratorWithImmovableReferences& operator++();
++  void operator++(int);
++  bool operator==(std::default_sentinel_t) const;
++};
++
++static_assert(std::input_iterator<IteratorWithImmovableReferences>);
++
++using NonEnumeratableRangeWithImmmovabaleReferences =
++    std::ranges::subrange<IteratorWithImmovableReferences, std::default_sentinel_t>;
++
++static_assert(std::ranges::input_range<NonEnumeratableRangeWithImmmovabaleReferences>);
++static_assert(!CanEnumerate<NonEnumeratableRangeWithImmmovabaleReferences>);
++static_assert(!std::move_constructible<std::ranges::range_reference_t<NonEnumeratableRangeWithImmmovabaleReferences>>);
++static_assert(
++    !std::move_constructible<std::ranges::range_rvalue_reference_t<NonEnumeratableRangeWithImmmovabaleReferences>>);
++
++template <typename View, typename T>
++using ExpectedViewElement = std::tuple<typename std::ranges::iterator_t<View>::difference_type, T>;
++
++// Helpers
++
++template <typename View, typename T = int>
++constexpr void compareViews(View v, std::initializer_list<ExpectedViewElement<View, T>> list) {
++  assert(std::ranges::equal(v, list));
++}
++
++// Test SFINAE friendliness
++
++static_assert(CanBePiped<RangeView, decltype(std::views::enumerate)>);
++
++static_assert(CanEnumerate<RangeView>);
++
++static_assert(!std::is_invocable_v<decltype(std::views::enumerate)>);
++static_assert(std::is_invocable_v<decltype(std::views::enumerate), RangeView>);
++static_assert(!std::is_invocable_v<decltype(std::views::enumerate), NotAView>);
++static_assert(!std::is_invocable_v<decltype(std::views::enumerate), NotInvocable>);
++
++static_assert(std::is_same_v<decltype(std::ranges::views::enumerate), decltype(std::views::enumerate)>);
++
++constexpr bool test() {
++  // Test `views::enumerate_view(v)`
++  {
++    int buff[] = {0, 1, 2, 3};
++
++    using Result = std::ranges::enumerate_view<RangeView>;
++    RangeView const range(buff, buff + 4);
++
++    std::same_as<Result> decltype(auto) result = std::views::enumerate(range);
++    compareViews(result, {{0, 0}, {1, 1}, {2, 2}, {3, 3}});
++  }
++  {
++    std::string_view sv{"babazmt"};
++    using Result = std::ranges::enumerate_view<std::string_view>;
++
++    std::same_as<Result> decltype(auto) result = std::views::enumerate(sv);
++    compareViews(result, {{0, 'b'}, {1, 'a'}, {2, 'b'}, {3, 'a'}, {4, 'z'}, {5, 'm'}, {6, 't'}});
++  }
++
++  // Test `adaptor | views::enumerate`
++  {
++    int buff[] = {0, 1, 2, 3};
++
++    using Result = std::ranges::enumerate_view<RangeView>;
++    RangeView const range(buff, buff + 4);
++
++    std::same_as<Result> decltype(auto) result = range | std::views::enumerate;
++    compareViews(result, {{0, 0}, {1, 1}, {2, 2}, {3, 3}});
++  }
++  {
++    std::string_view sv{"babazmt"};
++    using Result = std::ranges::enumerate_view<std::string_view>;
++
++    std::same_as<Result> decltype(auto) result = sv | std::views::enumerate;
++    compareViews(result, {{0, 'b'}, {1, 'a'}, {2, 'b'}, {3, 'a'}, {4, 'z'}, {5, 'm'}, {6, 't'}});
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/base.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/base.pass.cpp
+new file mode 100644
+index 0000000000000..7d2b37ad64438
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/base.pass.cpp
+@@ -0,0 +1,86 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr V base() const & requires copy_constructible<V>;
++// constexpr V base() &&;
++
++#include <cassert>
++#include <ranges>
++
++#include "MoveOnly.h"
++
++#include "types.h"
++
++template <class T>
++concept HasBase = requires(T&& t) { std::forward<T>(t).base(); };
++
++// SFINAE
++
++static_assert(HasBase<std::ranges::enumerate_view<RangeView> const&>);
++static_assert(HasBase<std::ranges::enumerate_view<RangeView>&&>);
++
++struct MoveOnlyView : RangeView {
++  MoveOnly mo;
++};
++
++static_assert(!HasBase<std::ranges::enumerate_view<MoveOnlyView> const&>);
++static_assert(HasBase<std::ranges::enumerate_view<MoveOnlyView>&&>);
++
++constexpr bool test() {
++  // Check the const& overload
++  {
++    int buff[] = {0, 1, 2, 3};
++
++    RangeView range(buff, buff + 4);
++
++    std::ranges::enumerate_view<RangeView> view{range};
++    std::same_as<RangeView> decltype(auto) result = view.base();
++    assert(result.wasCopyInitialized);
++    assert(range.begin() == result.begin());
++    assert(range.end() == result.end());
++  }
++  {
++    int buff[] = {0, 1, 2, 3};
++
++    RangeView const range(buff, buff + 4);
++
++    std::ranges::enumerate_view<RangeView> const view{range};
++    std::same_as<RangeView> decltype(auto) result = view.base();
++    assert(result.wasCopyInitialized);
++    assert(range.begin() == result.begin());
++    assert(range.end() == result.end());
++  }
++
++  // Check the && overload
++  {
++    int buff[] = {0, 1, 2, 3};
++
++    RangeView const range(buff, buff + 4);
++
++    std::ranges::enumerate_view<RangeView> view{range};
++    std::same_as<RangeView> decltype(auto) result = std::move(view).base();
++    assert(result.wasMoveInitialized);
++    assert(range.begin() == result.begin());
++    assert(range.end() == result.end());
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/begin.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/begin.pass.cpp
+new file mode 100644
+index 0000000000000..6ef1099a2963f
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/begin.pass.cpp
+@@ -0,0 +1,129 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr auto begin() requires (!simple-view<V>);
++// constexpr auto begin() const requires range-with-movable-references<const V>;
++
++#include <cassert>
++#include <concepts>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "types.h"
++
++// Types
++
++template <bool Simple>
++struct CommonView : std::ranges::view_base {
++  constexpr std::tuple<std::ptrdiff_t, int>* begin()
++    requires(!Simple)
++  {
++    return nullptr;
++  }
++  constexpr const std::tuple<std::ptrdiff_t, int>* begin() const { return nullptr; }
++  constexpr std::tuple<std::ptrdiff_t, int>* end()
++    requires(!Simple)
++  {
++    return nullptr;
++  }
++  constexpr const std::tuple<std::ptrdiff_t, int>* end() const { return nullptr; }
++};
++using SimpleCommonView    = CommonView<true>;
++using NonSimpleCommonView = CommonView<false>;
++
++struct NoConstBeginView : std::ranges::view_base {
++  constexpr std::tuple<std::ptrdiff_t, int>* begin() { return nullptr; }
++  constexpr std::tuple<std::ptrdiff_t, int>* end() { return nullptr; }
++};
++
++// SFINAE
++
++template <class T>
++concept HasConstBegin = requires(const T ct) { ct.begin(); };
++
++template <class T>
++concept HasBegin = requires(T t) { t.begin(); };
++
++template <class T>
++concept HasConstAndNonConstBegin =
++    HasConstBegin<T> &&
++    // Because const begin() and non-const begin() returns different types: iterator<true> vs. iterator<false>
++    requires(T t, const T ct) { requires !std::same_as<decltype(t.begin()), decltype(ct.begin())>; };
++
++template <class T>
++concept HasOnlyNonConstBegin = HasBegin<T> && !HasConstBegin<T>;
++
++template <class T>
++concept HasOnlyConstBegin = HasConstBegin<T> && !HasConstAndNonConstBegin<T>;
++
++// simple-view<V>
++static_assert(HasOnlyConstBegin<std::ranges::enumerate_view<SimpleCommonView>>);
++
++// !simple-view<V> && range<const V>
++static_assert(HasConstAndNonConstBegin<std::ranges::enumerate_view<NonSimpleCommonView>>);
++
++// !range<const V>
++static_assert(HasOnlyNonConstBegin<std::ranges::enumerate_view<NoConstBeginView>>);
++
++constexpr bool test() {
++  int buff[] = {1, 2, 3, 4, 5, 6, 7, 8};
++
++  // Check the return type of begin()
++  {
++    RangeView range(buff, buff + 1);
++
++    std::ranges::enumerate_view view(range);
++    using Iterator = std::ranges::iterator_t<decltype(view)>;
++    static_assert(std::same_as<Iterator, decltype(view.begin())>);
++    static_assert(std::same_as<ValueType<int>, decltype(*view.begin())>);
++  }
++
++  // begin() over an empty range
++  {
++    RangeView range(buff, buff);
++
++    std::ranges::enumerate_view view(range);
++    auto it = view.begin();
++    assert(base(it.base()) == buff);
++    assert(it == view.end());
++  }
++
++  // begin() over a 1-element range
++  {
++    RangeView range(buff, buff + 1);
++
++    std::ranges::enumerate_view view(range);
++    auto it = view.begin();
++    assert(base(it.base()) == buff);
++  }
++
++  // begin() over an N-element range
++  {
++    RangeView range(buff, buff + 8);
++
++    std::ranges::enumerate_view view(range);
++    auto it = view.begin();
++    assert(base(it.base()) == buff);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctad.compile.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctad.compile.pass.cpp
+new file mode 100644
+index 0000000000000..1cdf2252c9a61
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctad.compile.pass.cpp
+@@ -0,0 +1,47 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// template<class R>
++//   enumerate_view(R&&) -> enumerate_view<views::all_t<R>>;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "types.h"
++
++constexpr bool test() {
++  {
++    MinimalDefaultConstructedView jv;
++    std::ranges::enumerate_view view(jv);
++    static_assert(std::is_same_v<decltype(view), std::ranges::enumerate_view<MinimalDefaultConstructedView>>);
++  }
++
++  // Test with a range that isn't a view, to make sure we properly use views::all_t in the implementation.
++  {
++    NotAViewRange range;
++    std::ranges::enumerate_view view(range);
++    static_assert(std::is_same_v<decltype(view), std::ranges::enumerate_view<std::ranges::ref_view<NotAViewRange>>>);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.base.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.base.pass.cpp
+new file mode 100644
+index 0000000000000..ab33ace0cee18
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.base.pass.cpp
+@@ -0,0 +1,55 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr explicit enumerate_view(V base);
++
++#include <ranges>
++
++#include <array>
++#include <cassert>
++#include <tuple>
++#include <type_traits>
++
++#include "types.h"
++
++constexpr bool test() {
++  using EnumerateView = std::ranges::enumerate_view<RangeView>;
++
++  {
++    std::array base = {0, 1, 2, 3, 84};
++
++    RangeView range(base.begin(), base.end());
++    EnumerateView view{range};
++
++    auto baseIt = base.begin();
++    auto viewIt = view.begin();
++    for (std::size_t index = 0; index != base.size(); ++index) {
++      auto [vi, vv] = *viewIt;
++      assert(std::cmp_equal(index, vi));
++      assert(*baseIt == vv);
++
++      ++baseIt;
++      ++viewIt;
++    }
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.default.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.default.pass.cpp
+new file mode 100644
+index 0000000000000..8d1c985dbfd33
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/ctor.default.pass.cpp
+@@ -0,0 +1,81 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr enumerate_view() requires default_initializable<V>;
++
++#include <ranges>
++
++#include <cassert>
++#include <tuple>
++#include <type_traits>
++
++constexpr int buff[] = {0, 1};
++
++template <bool DefaultConstructible>
++struct DefaultConstructibleView : std::ranges::view_base {
++  constexpr DefaultConstructibleView()
++    requires DefaultConstructible
++      : begin_(buff), end_(buff + 1) {}
++
++  constexpr int const* begin() const { return begin_; }
++  constexpr int const* end() const { return end_; }
++
++  int const* begin_;
++  int const* end_;
++};
++
++static_assert(std::is_default_constructible_v<std::ranges::enumerate_view<DefaultConstructibleView<true>>>);
++static_assert(!std::is_default_constructible_v<std::ranges::enumerate_view<DefaultConstructibleView<false>>>);
++
++constexpr bool test() {
++  using EnumerateView = std::ranges::enumerate_view<DefaultConstructibleView<true>>;
++
++  {
++    EnumerateView view;
++
++    assert((*view.begin() == std::tuple<std::ranges::iterator_t<EnumerateView>::difference_type, int>{0, 0}));
++    assert((*view.end() == std::tuple<std::ranges::iterator_t<EnumerateView>::difference_type, int>{1, 1}));
++
++    auto [bi, bv] = *view.begin();
++    assert(bi == 0);
++    assert(bv == 0);
++
++    auto [ei, ev] = *view.end();
++    assert(ei == 1);
++    assert(ev == 1);
++  }
++  {
++    EnumerateView view = {};
++
++    assert((*view.begin() == std::tuple<std::ranges::iterator_t<EnumerateView>::difference_type, int>{0, 0}));
++    assert((*view.end() == std::tuple<std::ranges::iterator_t<EnumerateView>::difference_type, int>{1, 1}));
++
++    auto [bi, bv] = *view.begin();
++    assert(bi == 0);
++    assert(bv == 0);
++
++    auto [ei, ev] = *view.end();
++    assert(ei == 1);
++    assert(ev == 1);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/enable_borrowed_range.compile.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/enable_borrowed_range.compile.pass.cpp
+new file mode 100644
+index 0000000000000..303f5ac063d15
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/enable_borrowed_range.compile.pass.cpp
+@@ -0,0 +1,35 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// template<class View>
++//   constexpr bool enable_borrowed_range<enumerate_view<View>>;
++
++#include <cassert>
++#include <ranges>
++
++struct NonBorrowedRange : std::ranges::view_base {
++  int* begin();
++  int* end();
++};
++
++struct BorrowedRange : std::ranges::view_base {
++  int* begin();
++  int* end();
++};
++
++template <>
++inline constexpr bool std::ranges::enable_borrowed_range<BorrowedRange> = true;
++
++static_assert(!std::ranges::borrowed_range<std::ranges::enumerate_view<NonBorrowedRange>>);
++static_assert(std::ranges::borrowed_range<std::ranges::enumerate_view<BorrowedRange>>);
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/end.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/end.pass.cpp
+new file mode 100644
+index 0000000000000..7a4d04364bece
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/end.pass.cpp
+@@ -0,0 +1,115 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr auto end() requires (!simple-view<V>);
++// constexpr auto end() const requires range-with-movable-references<const V>;
++
++#include <cassert>
++#include <concepts>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "types.h"
++
++constexpr bool test() {
++  int buff[] = {1, 2, 3, 4, 5, 6, 7, 8};
++
++  // Check the return type of .end()
++  {
++    RangeView range(buff, buff + 1);
++
++    std::ranges::enumerate_view view(range);
++    using Iterator = std::ranges::iterator_t<decltype(view)>;
++    static_assert(std::same_as<Iterator, decltype(view.end())>);
++    using Sentinel = std::ranges::sentinel_t<decltype(view)>;
++    static_assert(std::same_as<Sentinel, decltype(view.end())>);
++  }
++
++  // Check the return type of .end() const
++  {
++    RangeView range(buff, buff + 1);
++
++    const std::ranges::enumerate_view view(range);
++    using Iterator = std::ranges::iterator_t<decltype(view)>;
++    static_assert(std::same_as<Iterator, decltype(view.end())>);
++    using Sentinel = std::ranges::sentinel_t<decltype(view)>;
++    static_assert(std::same_as<Sentinel, decltype(view.end())>);
++  }
++
++  // end() over an empty range
++  {
++    RangeView range(buff, buff);
++
++    std::ranges::enumerate_view view(range);
++
++    auto it = view.end();
++    assert(base(it.base()) == buff);
++    assert(it == view.end());
++
++    auto constIt = std::as_const(view).end();
++    assert(base(constIt.base()) == buff);
++    assert(constIt == std::as_const(view).end());
++  }
++
++  // end() const over an empty range
++  {
++    RangeView range(buff, buff);
++
++    const std::ranges::enumerate_view view(range);
++
++    auto it = view.end();
++    assert(base(it.base()) == buff);
++    assert(it == view.end());
++
++    auto constIt = std::as_const(view).end();
++    assert(base(constIt.base()) == buff);
++    assert(constIt == std::as_const(view).end());
++  }
++
++  // end() over an 1-element range
++  {
++    RangeView range(buff, buff + 1);
++
++    std::ranges::enumerate_view view(range);
++
++    auto it = view.end();
++    assert(base(it.base()) == buff + 1);
++
++    auto constIt = std::as_const(view).end();
++    assert(base(constIt.base()) == buff + 1);
++  }
++
++  // end() over an N-element range
++  {
++    RangeView range(buff, buff + 8);
++
++    std::ranges::enumerate_view view(range);
++
++    auto it = view.end();
++    assert(base(it.base()) == buff + 8);
++
++    auto constIt = std::as_const(view).end();
++    assert(base(constIt.base()) == buff + 8);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/arithmetic.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/arithmetic.pass.cpp
+new file mode 100644
+index 0000000000000..8ab21cd1f55b9
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/arithmetic.pass.cpp
+@@ -0,0 +1,171 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr iterator& operator+=(difference_type x)
++//   requires random_access_range<Base>;
++// constexpr iterator& operator-=(difference_type x)
++//   requires random_access_range<Base>;
++
++// friend constexpr iterator operator+(const iterator& x, difference_type y)
++//   requires random_access_range<Base>;
++// friend constexpr iterator operator+(difference_type x, const iterator& y)
++//   requires random_access_range<Base>;
++// friend constexpr iterator operator-(const iterator& x, difference_type y)
++//   requires random_access_range<Base>;
++// friend constexpr difference_type operator-(const iterator& x, const iterator& y);
++
++#include <ranges>
++
++#include "test_iterators.h"
++
++// Concepts
++
++template <class T, class U>
++concept CanPlus = requires(T t, U u) { t + u; };
++
++template <class T, class U>
++concept CanPlusEqual = requires(T t, U u) { t += u; };
++
++template <class T, class U>
++concept CanMinus = requires(T t, U u) { t - u; };
++
++template <class T, class U>
++concept CanMinusEqual = requires(T t, U u) { t -= u; };
++
++template <class BaseRange>
++using EnumerateIter = std::ranges::iterator_t<std::ranges::enumerate_view<BaseRange>>;
++
++using RandomAccessRange = std::ranges::subrange<int*>;
++
++// SFINAE.
++
++static_assert(std::ranges::random_access_range<RandomAccessRange>);
++static_assert(
++    std::sized_sentinel_for<std::ranges::iterator_t<RandomAccessRange>, std::ranges::iterator_t<RandomAccessRange>>);
++
++static_assert(CanPlus<EnumerateIter<RandomAccessRange>, int>);
++static_assert(CanPlus<int, EnumerateIter<RandomAccessRange>>);
++static_assert(CanPlusEqual<EnumerateIter<RandomAccessRange>, int>);
++static_assert(CanMinus<EnumerateIter<RandomAccessRange>, int>);
++static_assert(CanMinus<EnumerateIter<RandomAccessRange>, EnumerateIter<RandomAccessRange>>);
++static_assert(CanMinusEqual<EnumerateIter<RandomAccessRange>, int>);
++
++using BidirectionalRange = std::ranges::subrange<bidirectional_iterator<int*>>;
++static_assert(!std::ranges::random_access_range<BidirectionalRange>);
++static_assert(
++    !std::sized_sentinel_for<std::ranges::iterator_t<BidirectionalRange>, std::ranges::iterator_t<BidirectionalRange>>);
++
++static_assert(!CanPlus<EnumerateIter<BidirectionalRange>, int>);
++static_assert(!CanPlus<int, EnumerateIter<BidirectionalRange>>);
++static_assert(!CanPlusEqual<EnumerateIter<BidirectionalRange>, int>);
++static_assert(!CanMinus<EnumerateIter<BidirectionalRange>, int>);
++static_assert(!CanMinusEqual<EnumerateIter<BidirectionalRange>, int>);
++
++constexpr void test_with_common_range() {
++  int ts[] = {90, 1, 2, 84};
++
++  RandomAccessRange r{ts, ts + 4};
++  auto ev = r | std::views::enumerate;
++
++  // operator+(x, n), operator+(n,x) and operator+=
++  {
++    auto it1 = ev.begin();
++
++    auto it2 = it1 + 3;
++    assert(it2.base() == &ts[3]);
++
++    auto it3 = 3 + it1;
++    assert(it3.base() == &ts[3]);
++
++    it1 += 3;
++    assert(it1 == it2);
++    assert(it1.base() == &ts[3]);
++  }
++
++  // operator-(x, n) and operator-=
++  {
++    auto it1 = ev.end();
++
++    auto it2 = it1 - 3;
++    assert(it2.base() == &ts[1]);
++
++    it1 -= 3;
++    assert(it1 == it2);
++    assert(it1.base() == &ts[1]);
++  }
++
++  // operator-(x, y)
++  {
++    assert((ev.end() - ev.begin()) == 4);
++
++    auto it1 = ev.begin() + 1;
++    auto it2 = ev.end() - 1;
++    assert((it1 - it2) == -2);
++  }
++}
++
++constexpr void test_with_noncommon_range() {
++  int ts[] = {90, 1, 2, 84};
++
++  RandomAccessRange r{ts, ts + 4};
++  auto it = std::counted_iterator{r.begin(), std::ssize(r)};
++  auto sr = std::ranges::subrange{it, std::default_sentinel};
++  auto ev = sr | std::views::enumerate;
++
++  // operator+(x, n), operator+(n,x) and operator+=
++  {
++    auto it1 = ev.begin();
++
++    auto it2 = it1 + 3;
++    assert(*it2.base() == 84);
++
++    auto it3 = 3 + it1;
++    assert(*it3.base() == 84);
++
++    it1 += 3;
++    assert(it1 == it2);
++    assert(*it1.base() == 84);
++  }
++
++  // operator-(x, n) and operator-=
++  {
++    auto it1 = ev.begin();
++
++    auto it2 = it1 + 3;
++    assert(*(it2 - 1).base() == 2);
++
++    it2 -= 3;
++    assert(it1 == it2);
++    assert(*it2.base() == 90);
++  }
++
++  // operator-(x, y)
++  { assert((ev.end() - ev.begin()) == 4); }
++}
++
++constexpr bool test() {
++  test_with_common_range();
++  test_with_noncommon_range();
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/base.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/base.pass.cpp
+new file mode 100644
+index 0000000000000..009ed4a7924a7
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/base.pass.cpp
+@@ -0,0 +1,80 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr const iterator_t<Base>& base() const & noexcept;
++// constexpr iterator_t<Base> base() &&;
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <ranges>
++#include <utility>
++#include <tuple>
++
++#include "test_iterators.h"
++#include "../types.h"
++
++template <class Iterator>
++constexpr void testBase() {
++  using Sentinel          = sentinel_wrapper<Iterator>;
++  using View              = MinimalView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateIterator = std::ranges::iterator_t<EnumerateView>;
++
++  auto make_enumerate_view = [](auto begin, auto end) {
++    View view{Iterator(begin), Sentinel(Iterator(end))};
++
++    return EnumerateView(std::move(view));
++  };
++
++  std::array array{0, 1, 2, 3, 84};
++  const auto view = make_enumerate_view(array.begin(), array.end());
++
++  // Test the const& version
++  {
++    EnumerateIterator const it                          = view.begin();
++    std::same_as<const Iterator&> decltype(auto) result = it.base();
++    ASSERT_NOEXCEPT(it.base());
++    assert(base(result) == array.begin());
++  }
++
++  // Test the && version
++  {
++    EnumerateIterator it                         = view.begin();
++    std::same_as<Iterator> decltype(auto) result = std::move(it).base();
++    assert(base(result) == array.begin());
++  }
++}
++
++constexpr bool test() {
++  testBase<cpp17_input_iterator<int*>>();
++  testBase<cpp20_input_iterator<int*>>();
++  testBase<forward_iterator<int*>>();
++  testBase<bidirectional_iterator<int*>>();
++  testBase<random_access_iterator<int*>>();
++  testBase<contiguous_iterator<int*>>();
++  testBase<int*>();
++  testBase<int const*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/compare.three_way.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/compare.three_way.pass.cpp
+new file mode 100644
+index 0000000000000..0ddd9bf579284
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/compare.three_way.pass.cpp
+@@ -0,0 +1,108 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// friend constexpr strong_ordering operator<=>(const iterator& x, const iterator& y) noexcept;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++constexpr void compareOperatorTest(const auto& iter1, const auto& iter2) {
++  assert(!(iter1 < iter1));
++  assert(iter1 < iter2);
++  assert(!(iter2 < iter1));
++
++  assert(iter1 <= iter1);
++  assert(iter1 <= iter2);
++  assert(!(iter2 <= iter1));
++
++  assert(!(iter1 > iter1));
++  assert(!(iter1 > iter2));
++  assert(iter2 > iter1);
++
++  assert(iter1 >= iter1);
++  assert(!(iter1 >= iter2));
++  assert(iter2 >= iter1);
++
++  assert(iter1 == iter1);
++  assert(!(iter1 == iter2));
++  assert(iter2 == iter2);
++
++  assert(!(iter1 != iter1));
++  assert(iter1 != iter2);
++  assert(!(iter2 != iter2));
++}
++
++constexpr bool test() {
++  int buff[] = {0, 1, 2, 3};
++  {
++    using View = std::ranges::enumerate_view<RangeView>;
++
++    using Iterator = std::ranges::iterator_t<View>;
++    static_assert(std::three_way_comparable<Iterator>);
++    using Subrange = std::ranges::subrange<Iterator>;
++    static_assert(std::three_way_comparable<std::ranges::iterator_t<Subrange>>);
++    using EnumerateView = std::ranges::enumerate_view<Subrange>;
++    static_assert(std::three_way_comparable<std::ranges::iterator_t<EnumerateView>>);
++
++    RangeView const range(buff, buff + 4);
++
++    std::same_as<View> decltype(auto) ev = std::views::enumerate(range);
++
++    auto it1 = ev.begin();
++    auto it2 = it1 + 1;
++
++    compareOperatorTest(it1, it2);
++
++    assert((it1 <=> it2) == std::strong_ordering::less);
++    assert((it1 <=> it1) == std::strong_ordering::equal);
++    assert((it2 <=> it2) == std::strong_ordering::equal);
++    assert((it2 <=> it1) == std::strong_ordering::greater);
++  }
++
++  // Test an old-school iterator with no operator<=>
++  {
++    using Iterator = random_access_iterator<int*>;
++    static_assert(!std::three_way_comparable<Iterator>);
++    using Subrange = std::ranges::subrange<Iterator>;
++    static_assert(!std::three_way_comparable<std::ranges::iterator_t<Subrange>>);
++    using EnumerateView = std::ranges::enumerate_view<Subrange>;
++    static_assert(std::three_way_comparable<std::ranges::iterator_t<EnumerateView>>);
++
++    auto ev  = Subrange{Iterator{buff}, Iterator{buff + 3}} | std::views::enumerate;
++    auto it1 = ev.begin();
++    auto it2 = it1 + 1;
++
++    compareOperatorTest(it1, it2);
++
++    assert((it1 <=> it2) == std::strong_ordering::less);
++    assert((it1 <=> it1) == std::strong_ordering::equal);
++    assert((it2 <=> it2) == std::strong_ordering::equal);
++    assert((it2 <=> it1) == std::strong_ordering::greater);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.convert.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.convert.pass.cpp
+new file mode 100644
+index 0000000000000..03aac95da01e2
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.convert.pass.cpp
+@@ -0,0 +1,84 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr iterator(iterator<!Const> i)
++//   requires Const && convertible_to<iterator_t<V>, iterator_t<Base>>;
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <ranges>
++#include <utility>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View                   = MinimalView<Iterator, Sentinel>;
++  using EnumerateView          = std::ranges::enumerate_view<View>;
++  using EnumerateIterator      = std::ranges::iterator_t<EnumerateView>;
++  using EnumerateConstIterator = std::ranges::iterator_t<const EnumerateView>;
++
++  auto make_enumerate_view = [](auto begin, auto end) {
++    View view{Iterator(begin), Sentinel(Iterator(end))};
++
++    return EnumerateView(std::move(view));
++  };
++
++  static_assert(std::is_convertible_v<EnumerateIterator, EnumerateConstIterator>);
++
++  std::array array{0, 84, 2, 3, 4};
++  auto view = make_enumerate_view(array.begin(), array.end());
++  {
++    std::same_as<EnumerateIterator> decltype(auto) it     = view.begin();
++    std::same_as<const Iterator&> decltype(auto) itResult = it.base();
++    assert(base(base(itResult)) == array.begin());
++
++    auto [index, value] = *(++it);
++    assert(index == 1);
++    assert(value == 84);
++  }
++  {
++    std::same_as<EnumerateConstIterator> decltype(auto) it = view.begin();
++    std::same_as<const Iterator&> decltype(auto) itResult  = it.base();
++    assert(base(base(itResult)) == array.begin());
++
++    auto [index, value] = *(++it);
++    assert(index == 1);
++    assert(value == 84);
++  }
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.default.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.default.pass.cpp
+new file mode 100644
+index 0000000000000..14f37f178473f
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/ctor.default.pass.cpp
+@@ -0,0 +1,70 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// iterator() requires default_initializable<iterator_t<Base>>;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, bool IsNoexcept = true>
++constexpr void test_default_constructible() {
++  using View              = MinimalView<Iterator, sentinel_wrapper<Iterator>>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateIterator = std::ranges::iterator_t<EnumerateView>;
++
++  EnumerateIterator it1;
++  EnumerateIterator it2{};
++
++  assert(it1 == it2);
++
++  static_assert(noexcept(EnumerateIterator()) == IsNoexcept);
++}
++
++template <class Iterator>
++constexpr void test_not_default_constructible() {
++  // Make sure the iterator is *not* default constructible when the underlying iterator isn't.
++  using Sentinel          = sentinel_wrapper<Iterator>;
++  using View              = MinimalView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateIterator = std::ranges::iterator_t<EnumerateView>;
++
++  static_assert(!std::is_default_constructible_v<EnumerateIterator>);
++}
++
++constexpr bool tests() {
++  // clang-format off
++  test_not_default_constructible<cpp17_input_iterator<int*>>();
++  test_not_default_constructible<cpp20_input_iterator<int*>>();
++  test_default_constructible<forward_iterator<int*>,       /* noexcept */ false>();
++  test_default_constructible<bidirectional_iterator<int*>, /* noexcept */ false>();
++  test_default_constructible<random_access_iterator<int*>, /* noexcept */ false>();
++  test_default_constructible<contiguous_iterator<int*>,    /* noexcept */ false>();
++  test_default_constructible<int*,                         /* noexcept */ true>();
++  // clang-format on
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/deref.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/deref.pass.cpp
+new file mode 100644
+index 0000000000000..3aaf2809fcf4b
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/deref.pass.cpp
+@@ -0,0 +1,102 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr auto operator*() const;
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <cstddef>
++#include <utility>
++#include <tuple>
++
++#include "test_iterators.h"
++#include "test_macros.h"
++
++#include "../types.h"
++
++template <class Iterator, class ValueType = int, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View              = MinimalView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateIterator = std::ranges::iterator_t<EnumerateView>;
++
++  using Result = std::tuple<typename EnumerateIterator::difference_type,
++                            std::ranges::range_reference_t<MinimalView<Iterator, Sentinel>>>;
++
++  std::array array{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
++
++  View view{Iterator(array.begin()), Sentinel(Iterator(array.end()))};
++  EnumerateView ev{std::move(view)};
++
++  {
++    auto it = ev.begin();
++    for (std::size_t index = 0; index < array.size(); ++index) {
++      std::same_as<Result> decltype(auto) result = *it;
++
++      auto [resultIndex, resultValue] = result;
++      assert(std::cmp_equal(index, resultIndex));
++      assert(array[index] == resultValue);
++
++      ++it;
++    }
++
++    assert(it == ev.end());
++  }
++
++  // const
++  {
++    auto constIt = std::as_const(ev).begin();
++    for (std::size_t index = 0; index < array.size(); ++index) {
++      std::same_as<Result> decltype(auto) result = *constIt;
++
++      auto [resultIndex, resultValue] = result;
++      assert(std::cmp_equal(index, resultIndex));
++      assert(array[index] == resultValue);
++
++      ++constIt;
++    }
++
++    assert(constIt == ev.end());
++  }
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  test<cpp17_input_iterator<int const*>, int const>();
++  test<cpp20_input_iterator<int const*>, int const>();
++  test<forward_iterator<int const*>, int const>();
++  test<bidirectional_iterator<int const*>, int const>();
++  test<random_access_iterator<int const*>, int const>();
++  test<contiguous_iterator<int const*>, int const>();
++  test<int const*, int const>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/equal.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/equal.pass.cpp
+new file mode 100644
+index 0000000000000..5cee6b6e002b2
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/equal.pass.cpp
+@@ -0,0 +1,62 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// friend constexpr bool operator==(const iterator& x, const iterator& y) noexcept;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++constexpr bool test() {
++  int buff[] = {0, 1, 2, 3, 5};
++  {
++    using View = std::ranges::enumerate_view<RangeView>;
++    RangeView const range(buff, buff + 5);
++
++    std::same_as<View> decltype(auto) ev = std::views::enumerate(range);
++
++    auto it1 = ev.begin();
++    auto it2 = it1 + 5;
++
++    assert(it1 == it1);
++    ASSERT_NOEXCEPT(it1 == it1);
++    assert(it1 != it2);
++    ASSERT_NOEXCEPT(it1 != it2);
++    assert(it2 != it1);
++    ASSERT_NOEXCEPT(it2 != it1);
++    assert(it2 == ev.end());
++    assert(ev.end() == it2);
++
++    for (std::size_t index = 0; index != 5; ++index) {
++      ++it1;
++    }
++
++    assert(it1 == it2);
++    assert(it2 == it1);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/index.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/index.pass.cpp
+new file mode 100644
+index 0000000000000..ad5dafd619ce8
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/index.pass.cpp
+@@ -0,0 +1,96 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr difference_type index() const noexcept;
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <cstdint>
++#include <utility>
++#include <tuple>
++
++#include "test_iterators.h"
++#include "test_macros.h"
++
++#include "../types.h"
++
++template <class Iterator, class ValueType = int, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View          = MinimalView<Iterator, Sentinel>;
++  using EnumerateView = std::ranges::enumerate_view<View>;
++
++  std::array array{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
++
++  View view{Iterator(array.begin()), Sentinel(Iterator(array.end()))};
++  EnumerateView ev(std::move(view));
++
++  {
++    auto it = ev.begin();
++    ASSERT_NOEXCEPT(it.index());
++
++    static_assert(std::same_as<typename decltype(it)::difference_type, decltype(it.index())>);
++    for (std::size_t index = 0; index < array.size(); ++index) {
++      assert(std::cmp_equal(index, it.index()));
++
++      ++it;
++    }
++
++    assert(it == ev.end());
++  }
++
++  // const
++  {
++    auto constIt = std::as_const(ev).begin();
++    ASSERT_NOEXCEPT(constIt.index());
++
++    static_assert(std::same_as<typename decltype(constIt)::difference_type, decltype(constIt.index())>);
++    for (std::size_t index = 0; index < array.size(); ++index) {
++      assert(std::cmp_equal(index, constIt.index()));
++
++      ++constIt;
++    }
++
++    assert(constIt == ev.end());
++  }
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  test<cpp17_input_iterator<int const*>, int const>();
++  test<cpp20_input_iterator<int const*>, int const>();
++  test<forward_iterator<int const*>, int const>();
++  test<bidirectional_iterator<int const*>, int const>();
++  test<random_access_iterator<int const*>, int const>();
++  test<contiguous_iterator<int const*>, int const>();
++  test<int const*, int const>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/iter_move.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/iter_move.pass.cpp
+new file mode 100644
+index 0000000000000..65c7ea6690de5
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/iter_move.pass.cpp
+@@ -0,0 +1,76 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// friend constexpr auto iter_move(const iterator& i)
++//   noexcept(noexcept(ranges::iter_move(i.current_)) &&
++//             is_nothrow_move_constructible_v<range_rvalue_reference_t<Base>>);
++
++#include <array>
++#include <cassert>
++#include <ranges>
++#include <type_traits>
++#include <utility>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, bool HasNoexceptIterMove>
++constexpr void test() {
++  using Sentinel          = sentinel_wrapper<Iterator>;
++  using View              = MinimalView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateIterator = std::ranges::iterator_t<EnumerateView>;
++
++  std::array array{0, 1, 2, 3, 4};
++
++  View view{Iterator(array.begin()), Sentinel(Iterator(array.end()))};
++  EnumerateView ev{std::move(view)};
++  EnumerateIterator const it = ev.begin();
++
++  auto&& result = iter_move(it);
++
++  static_assert(std::is_same_v<decltype(result),
++                               std::tuple<typename std::ranges::iterator_t<EnumerateView>::difference_type, int&&>&&>);
++  static_assert(std::is_same_v<decltype(result), std::tuple<typename decltype(it)::difference_type, int&&>&&>);
++
++  assert(get<0>(result) == 0);
++  assert(&get<1>(result) == array.begin());
++
++  static_assert(noexcept(iter_move(it)) == HasNoexceptIterMove);
++}
++
++constexpr bool tests() {
++  // clang-format off
++  test<cpp17_input_iterator<int*>,           /* noexcept */ false>();
++  test<cpp20_input_iterator<int*>,           /* noexcept */ false>();
++  test<forward_iterator<int*>,               /* noexcept */ false>();
++  test<bidirectional_iterator<int*>,         /* noexcept */ false>();
++  test<random_access_iterator<int*>,         /* noexcept */ false>();
++  test<contiguous_iterator<int*>,            /* noexcept */ false>();
++  test<int*,                                 /* noexcept */ true>();
++  test<MaybeNoexceptIterMoveInputIterator<true>,  /* noexcept */ true>();
++  test<MaybeNoexceptIterMoveInputIterator<false>, /* noexcept */ false>();
++  // clang-format on
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/subscript.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/subscript.pass.cpp
+new file mode 100644
+index 0000000000000..01256157f159f
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/subscript.pass.cpp
+@@ -0,0 +1,77 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// constexpr auto operator[](difference_type n) const
++//   requires random_access_range<Base>;
++
++#include <array>
++#include <cassert>
++#include <ranges>
++#include <tuple>
++
++#include "test_iterators.h"
++
++template <class T, class U>
++concept HasSubscriptOperator = requires(T t, U u) { t[u]; };
++
++template <class BaseRange>
++using EnumerateIterator = std::ranges::iterator_t<std::ranges::enumerate_view<BaseRange>>;
++
++using Subrange = std::ranges::subrange<int*>;
++static_assert(HasSubscriptOperator<EnumerateIterator<Subrange>, int>);
++
++using BidirectionalRange = std::ranges::subrange<bidirectional_iterator<int*>>;
++static_assert(!HasSubscriptOperator<EnumerateIterator<BidirectionalRange>, int>);
++
++constexpr bool test() {
++  // Reference
++  {
++    std::array ts = {90, 1, 2, 84};
++    auto view     = ts | std::views::enumerate;
++    auto it       = view.begin();
++
++    using DifferenceT = std::iter_difference_t<std::iter_difference_t<decltype(it)>>;
++    static_assert(std::is_same_v<decltype(it[2]), std::tuple<DifferenceT, int&>>);
++
++    assert((it[0] == std::tuple<DifferenceT, int>(0, 90)));
++    assert((it[1] == std::tuple<DifferenceT, int>(1, 1)));
++    assert((it[2] == std::tuple<DifferenceT, int>(2, 2)));
++    assert((it[3] == std::tuple<DifferenceT, int>(3, 84)));
++  }
++
++  // Value
++  {
++    auto view = std::views::iota(0, 4) | std::views::enumerate;
++    auto it   = view.begin();
++
++    using DifferenceT = std::iter_difference_t<std::iter_difference_t<decltype(it)>>;
++    static_assert(std::is_same_v<decltype(it[2]), std::tuple<DifferenceT, int>>);
++
++    assert((it[0] == std::tuple<DifferenceT, int>(0, 0)));
++    assert((it[1] == std::tuple<DifferenceT, int>(1, 1)));
++    assert((it[2] == std::tuple<DifferenceT, int>(2, 2)));
++    assert((it[3] == std::tuple<DifferenceT, int>(3, 3)));
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/types.compile.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/types.compile.pass.cpp
+new file mode 100644
+index 0000000000000..e29d16c7f9d96
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/iterator/types.compile.pass.cpp
+@@ -0,0 +1,87 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::iterator
++
++// std::enumerate_view::<iterator>::difference_type;
++// std::enumerate_view::<iterator>::value_type;
++// std::enumerate_view::<iterator>::iterator_category;
++// std::enumerate_view::<iterator>::iterator_concept;
++
++#include <ranges>
++#include <type_traits>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <typename T>
++concept HasIteratorCategory = requires { typename T::iterator_category; };
++
++template <class Iterator>
++using EnumerateViewFor = std::ranges::enumerate_view< MinimalView<Iterator, sentinel_wrapper<Iterator>>>;
++
++template <class Iterator>
++using EnumerateIteratorFor = std::ranges::iterator_t<EnumerateViewFor<Iterator>>;
++
++struct ForwardIteratorWithInputCategory {
++  using difference_type   = int;
++  using value_type        = int;
++  using iterator_category = std::input_iterator_tag;
++  using iterator_concept  = std::forward_iterator_tag;
++  ForwardIteratorWithInputCategory();
++  ForwardIteratorWithInputCategory& operator++();
++  ForwardIteratorWithInputCategory operator++(int);
++  int& operator*() const;
++  friend bool operator==(ForwardIteratorWithInputCategory, ForwardIteratorWithInputCategory);
++};
++static_assert(std::forward_iterator<ForwardIteratorWithInputCategory>);
++
++constexpr void test() {
++  // Check iterator_concept for various categories of ranges
++  {
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<cpp17_input_iterator<int*>>::iterator_concept, std::input_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<cpp20_input_iterator<int*>>::iterator_concept, std::input_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<ForwardIteratorWithInputCategory>::iterator_concept,
++                                 std::forward_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<forward_iterator<int*>>::iterator_concept, std::forward_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<bidirectional_iterator<int*>>::iterator_concept,
++                                 std::bidirectional_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<random_access_iterator<int*>>::iterator_concept,
++                                 std::random_access_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<contiguous_iterator<int*>>::iterator_concept,
++                                 std::random_access_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<int*>::iterator_concept, std::random_access_iterator_tag>);
++  }
++
++  // Check iterator_category for various categories of ranges
++  {
++    static_assert(HasIteratorCategory<EnumerateIteratorFor<cpp17_input_iterator<int*>>>);
++    static_assert(HasIteratorCategory<EnumerateIteratorFor<cpp20_input_iterator<int*>>>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<ForwardIteratorWithInputCategory>::iterator_category,
++                                 std::input_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<forward_iterator<int*>>::iterator_category, std::input_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<bidirectional_iterator<int*>>::iterator_category, std::input_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<random_access_iterator<int*>>::iterator_category, std::input_iterator_tag>);
++    static_assert(
++        std::is_same_v<EnumerateIteratorFor<contiguous_iterator<int*>>::iterator_category, std::input_iterator_tag>);
++    static_assert(std::is_same_v<EnumerateIteratorFor<int*>::iterator_category, std::input_iterator_tag>);
++  }
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/base.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/base.pass.cpp
+new file mode 100644
+index 0000000000000..95af02423a49c
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/base.pass.cpp
+@@ -0,0 +1,63 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::sentinel
++
++// constexpr sentinel_t<Base> base() const;
++
++#include <ranges>
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <utility>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View              = MinimalView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateSentinel = std::ranges::sentinel_t<EnumerateView>;
++
++  std::array<int, 5> array{0, 1, 2, 3, 84};
++
++  View mv{Iterator{array.begin()}, Sentinel{Iterator{array.end()}}};
++  EnumerateView ev{std::move(mv)};
++
++  EnumerateSentinel const s                    = ev.end();
++  std::same_as<Sentinel> decltype(auto) result = s.base();
++  assert(base(base(result)) == array.end());
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.convert.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.convert.pass.cpp
+new file mode 100644
+index 0000000000000..ec34c1f4b6b1b
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.convert.pass.cpp
+@@ -0,0 +1,76 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::sentinel
++
++//  constexpr sentinel(sentinel<!Const> other)
++//       requires Const && convertible_to<sentinel_t<V>, sentinel_t<Base>>;
++
++#include <ranges>
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <utility>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View                   = MinimalView<Iterator, Sentinel>;
++  using EnumerateView          = std::ranges::enumerate_view<View>;
++  using EnumerateSentinel      = std::ranges::sentinel_t<EnumerateView>;
++  using EnumerateConstSentinel = std::ranges::sentinel_t<const EnumerateView>;
++
++  auto make_enumerate_view = [](auto begin, auto end) {
++    View view{Iterator(begin), Sentinel(Iterator(end))};
++
++    return EnumerateView(std::move(view));
++  };
++
++  static_assert(std::is_convertible_v<EnumerateSentinel, EnumerateConstSentinel>);
++
++  std::array array{0, 1, 2, 3, 84};
++  auto view = make_enumerate_view(array.begin(), array.end());
++
++  std::same_as<EnumerateSentinel> decltype(auto) s = view.end();
++  std::same_as<Sentinel> decltype(auto) sResult    = s.base();
++  assert(base(base(sResult)) == array.end());
++
++  // Test assignment
++  EnumerateConstSentinel cs                      = s;
++  std::same_as<Sentinel> decltype(auto) csResult = cs.base();
++  assert(base(base(csResult)) == array.end());
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.default.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.default.pass.cpp
+new file mode 100644
+index 0000000000000..f65b255770aac
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/ctor.default.pass.cpp
+@@ -0,0 +1,77 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::sentinel
++
++// sentinel() = default;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++struct PODSentinel {
++  int i; // deliberately uninitialised
++
++  friend constexpr bool operator==(std::tuple<int>*, const PODSentinel&) { return true; }
++};
++
++template <typename Iterator, typename Sentinel>
++struct PODSentinelView : MinimalView<Iterator, Sentinel> {
++  std::tuple<int>* begin() const;
++  PODSentinel end();
++};
++
++template <class Iterator>
++constexpr void test() {
++  using Sentinel          = sentinel_wrapper<Iterator>;
++  using View              = PODSentinelView<Iterator, Sentinel>;
++  using EnumerateView     = std::ranges::enumerate_view<View>;
++  using EnumerateSentinel = std::ranges::sentinel_t<EnumerateView>;
++
++  {
++    EnumerateSentinel s;
++
++    assert(s.base().i == 0);
++  }
++
++  {
++    EnumerateSentinel s = {};
++
++    assert(s.base().i == 0);
++  }
++
++  static_assert(noexcept(EnumerateSentinel()));
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/equal.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/equal.pass.cpp
+new file mode 100644
+index 0000000000000..317082801d4f5
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/equal.pass.cpp
+@@ -0,0 +1,72 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::sentinel
++
++// template<bool OtherConst>
++//   requires sentinel_for<sentinel_t<Base>, iterator_t<maybe-const<OtherConst, V>>>
++// friend constexpr bool operator==(const iterator<OtherConst>& x, const sentinel& y);
++
++#include <ranges>
++
++#include <array>
++#include <cassert>
++#include <concepts>
++#include <utility>
++
++#include "test_iterators.h"
++
++#include "../types.h"
++
++template <class Iterator, class Sentinel = sentinel_wrapper<Iterator>>
++constexpr void test() {
++  using View = MinimalView<Iterator, Sentinel>;
++
++  std::array array{0, 1, 2, 3, 84};
++
++  View v(Iterator(array.begin()), Sentinel(Iterator(array.end())));
++  std::ranges::enumerate_view view(std::move(v));
++
++  auto const it = view.begin();
++  auto const s  = view.end();
++
++  std::same_as<bool> decltype(auto) eqItSResult = (it == s);
++  assert(!eqItSResult);
++  std::same_as<bool> decltype(auto) eqSItResult = (s == it);
++  assert(!eqSItResult);
++
++  std::same_as<bool> decltype(auto) neqItSResult = (it != s);
++  assert(neqItSResult);
++  std::same_as<bool> decltype(auto) neqSItResult = (s != it);
++  assert(neqSItResult);
++}
++
++constexpr bool tests() {
++  test<cpp17_input_iterator<int*>>();
++  test<cpp20_input_iterator<int*>>();
++  test<forward_iterator<int*>>();
++  test<bidirectional_iterator<int*>>();
++  test<random_access_iterator<int*>>();
++  test<contiguous_iterator<int*>>();
++  test<int*>();
++
++  return true;
++}
++
++int main(int, char**) {
++  tests();
++  static_assert(tests());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/minus.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/minus.pass.cpp
+new file mode 100644
+index 0000000000000..a099967214145
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/sentinel/minus.pass.cpp
+@@ -0,0 +1,265 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// class enumerate_view::sentinel
++
++// template<bool OtherConst>
++//   requires sized_sentinel_for<sentinel_t<Base>, iterator_t<maybe-const<OtherConst, V>>>
++// friend constexpr range_difference_t<maybe-const<OtherConst, V>>
++//   operator-(const iterator<OtherConst>& x, const sentinel& y);
++
++// template<bool OtherConst>
++//   requires sized_sentinel_for<sentinel_t<Base>, iterator_t<maybe-const<OtherConst, V>>>
++// friend constexpr range_difference_t<maybe-const<OtherConst, V>>
++//   operator-(const sentinel& x, const iterator<OtherConst>& y);
++
++#include <array>
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "../test_concepts.h"
++// #include "../types_iterators.h"
++#include "../types.h"
++
++template <bool Const>
++struct Iter {
++  int* it_;
++
++  using value_type       = int;
++  using difference_type  = std::ptrdiff_t;
++  using iterator_concept = std::input_iterator_tag;
++
++  constexpr decltype(auto) operator*() const { return *it_; }
++  constexpr Iter& operator++() {
++    ++it_;
++    return *this;
++  }
++  constexpr void operator++(int) { ++it_; }
++};
++
++template <bool Const>
++struct Sent {
++  int* end_;
++
++  constexpr bool operator==(const Iter<Const>& i) const { return i.it_ == end_; }
++};
++
++template <bool Const>
++struct SizedSent {
++  int* end_;
++
++  constexpr bool operator==(const Iter<Const>& i) const { return i.it_ == end_; }
++
++  friend constexpr auto operator-(const SizedSent& st, const Iter<Const>& it) { return st.end_ - it.it_; }
++
++  friend constexpr auto operator-(const Iter<Const>& it, const SizedSent& st) { return it.it_ - st.end_; }
++};
++
++template <bool Const>
++struct CrossSizedSent {
++  int* end_;
++
++  template <bool C>
++  constexpr bool operator==(const Iter<C>& i) const {
++    return i.it_ == end_;
++  }
++
++  template <bool C>
++  friend constexpr auto operator-(const CrossSizedSent& st, const Iter<C>& it) {
++    return st.end_ - it.it_;
++  }
++
++  template <bool C>
++  friend constexpr auto operator-(const Iter<C>& it, const CrossSizedSent& st) {
++    return it.it_ - st.end_;
++  }
++};
++
++template <template <bool> class It, template <bool> class St>
++struct BufferView : std::ranges::view_base {
++  template <std::size_t N>
++  constexpr BufferView(int (&b)[N]) : buffer_(b), size_(N) {}
++
++  template <std::size_t N>
++  constexpr BufferView(std::array<int, N>& arr) : buffer_(arr.data()), size_(N) {}
++
++  using iterator       = It<false>;
++  using sentinel       = St<false>;
++  using const_iterator = It<true>;
++  using const_sentinel = St<true>;
++
++  constexpr iterator begin() { return {buffer_}; }
++  constexpr const_iterator begin() const { return {buffer_}; }
++  constexpr sentinel end() { return sentinel{buffer_ + size_}; }
++  constexpr const_sentinel end() const { return const_sentinel{buffer_ + size_}; }
++
++  int* buffer_;
++  std::size_t size_;
++};
++
++template <template <bool> class It, template <bool> class St>
++struct SizedBufferView : BufferView<It, St> {
++  using BufferView<It, St>::BufferView;
++
++  using BufferView<It, St>::iterator;
++  using BufferView<It, St>::sentinel;
++  using BufferView<It, St>::const_iterator;
++  using BufferView<It, St>::const_sentinel;
++
++  using BufferView<It, St>::begin;
++  using BufferView<It, St>::end;
++
++  constexpr std::size_t size() { return BufferView<It, St>::size_; }
++};
++
++template <class T, class U>
++concept HasMinus = requires(const T t, const U u) { t - u; };
++
++template <class BaseView>
++using EnumerateView = std::ranges::enumerate_view<BaseView>;
++
++template <class BaseView>
++using EnumerateIter = std::ranges::iterator_t<EnumerateView<BaseView>>;
++
++template <class BaseView>
++using EnumerateConstIter = std::ranges::iterator_t<const EnumerateView<BaseView>>;
++
++template <class BaseView>
++using EnumerateSentinel = std::ranges::sentinel_t<EnumerateView<BaseView>>;
++
++template <class BaseView>
++using EnumerateConstSentinel = std::ranges::sentinel_t<const EnumerateView<BaseView>>;
++
++constexpr void testConstraints() {
++  // Base is not sized
++  {
++    using Base = BufferView<Iter, Sent>;
++
++    static_assert(!HasMemberSize<Base>);
++    static_assert(!std::ranges::sized_range<Base>);
++
++    static_assert(!HasMinus<EnumerateIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(!HasMinus<EnumerateIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(!HasMinus<EnumerateConstIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(!HasMinus<EnumerateConstIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(!HasMinus<EnumerateSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(!HasMinus<EnumerateSentinel<Base>, EnumerateConstIter<Base>>);
++
++    static_assert(!HasMinus<EnumerateConstSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(!HasMinus<EnumerateConstSentinel<Base>, EnumerateConstIter<Base>>);
++  }
++
++  // Base is sized but not cross const
++  {
++    using Base = SizedBufferView<Iter, Sent>;
++
++    static_assert(HasMemberSize<Base>);
++    static_assert(std::ranges::sized_range<Base>);
++
++    static_assert(HasMinus<EnumerateIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(!HasMinus<EnumerateIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(!HasMinus<EnumerateConstIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(HasMinus<EnumerateConstIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(HasMinus<EnumerateSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(!HasMinus<EnumerateSentinel<Base>, EnumerateConstIter<Base>>);
++
++    static_assert(!HasMinus<EnumerateConstSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(HasMinus<EnumerateConstSentinel<Base>, EnumerateConstIter<Base>>);
++  }
++
++  // Base is cross const sized
++  {
++    using Base = BufferView<Iter, CrossSizedSent>;
++
++    static_assert(!HasMemberSize<Base>);
++    static_assert(!std::ranges::sized_range<Base>);
++
++    static_assert(HasMinus<EnumerateIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(HasMinus<EnumerateIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(HasMinus<EnumerateConstIter<Base>, EnumerateSentinel<Base>>);
++    static_assert(HasMinus<EnumerateConstIter<Base>, EnumerateConstSentinel<Base>>);
++
++    static_assert(HasMinus<EnumerateSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(HasMinus<EnumerateSentinel<Base>, EnumerateConstIter<Base>>);
++
++    static_assert(HasMinus<EnumerateConstSentinel<Base>, EnumerateIter<Base>>);
++    static_assert(HasMinus<EnumerateConstSentinel<Base>, EnumerateConstIter<Base>>);
++  }
++}
++
++constexpr bool test() {
++  int buffer[] = {1, 2, 3, 4, 5};
++
++  // Base is sized but not cross const
++  {
++    using Base = SizedBufferView<Iter, SizedSent>;
++
++    static_assert(HasMemberSize<Base>);
++    static_assert(std::ranges::sized_range<Base>);
++
++    Base base{buffer};
++    auto ev         = base | std::views::enumerate;
++    auto iter       = ev.begin();
++    auto const_iter = std::as_const(ev).begin();
++    auto sent       = ev.end();
++    auto const_sent = std::as_const(ev).end();
++
++    // Asssert difference
++    assert(iter - sent == -5);
++    assert(sent - iter == 5);
++    assert(const_iter - const_sent == -5);
++    assert(const_sent - const_iter == 5);
++  }
++
++  // Base is cross const sized
++  {
++    using Base = BufferView<Iter, CrossSizedSent>;
++
++    static_assert(!HasMemberSize<Base>);
++    static_assert(!std::ranges::sized_range<Base>);
++
++    Base base{buffer};
++    auto ev         = base | std::views::enumerate;
++    auto iter       = ev.begin();
++    auto const_iter = std::as_const(ev).begin();
++    auto sent       = ev.end();
++    auto const_sent = std::as_const(ev).end();
++
++    // Assert difference
++    assert(iter - sent == -5);
++    assert(sent - iter == 5);
++    assert(iter - const_sent == -5);
++    assert(const_sent - iter == 5);
++    assert(const_iter - sent == -5);
++    assert(sent - const_iter == 5);
++    assert(const_iter - const_sent == -5);
++    assert(const_sent - const_iter == 5);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/size.pass.cpp b/libcxx/test/std/ranges/range.adaptors/range.enumerate/size.pass.cpp
+new file mode 100644
+index 0000000000000..33709bb170952
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/size.pass.cpp
+@@ -0,0 +1,56 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
++
++// <ranges>
++
++// class enumerate_view
++
++// constexpr auto size() requires sized_range<V>;
++// constexpr auto size() const requires sized_range<const V>;
++
++#include <cassert>
++#include <ranges>
++
++#include "test_iterators.h"
++
++#include "test_concepts.h"
++#include "types.h"
++
++struct NonSizedRangeView : std::ranges::view_base {
++  using iterator = forward_iterator<int*>;
++  iterator begin() const;
++  iterator end() const;
++};
++
++static_assert(!std::ranges::sized_range<NonSizedRangeView>);
++static_assert(!std::ranges::sized_range<const NonSizedRangeView>);
++
++static_assert(!HasMemberSize<std::ranges::enumerate_view<NonSizedRangeView>>);
++static_assert(!HasMemberSize<const std::ranges::enumerate_view<NonSizedRangeView>>);
++
++constexpr bool test() {
++  int buffer[] = {1, 2, 3};
++
++  // Non-const and const are sized
++  {
++    auto view = std::views::enumerate(buffer);
++    assert(view.size() == 3);
++    assert(std::as_const(view).size() == 3);
++  }
++
++  return true;
++}
++
++int main(int, char**) {
++  test();
++  static_assert(test());
++
++  return 0;
++}
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/test_concepts.h b/libcxx/test/std/ranges/range.adaptors/range.enumerate/test_concepts.h
+new file mode 100644
+index 0000000000000..4211706989c6b
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/test_concepts.h
+@@ -0,0 +1,15 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_CONCEPTS_H
++#define TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_CONCEPTS_H
++
++template <class T>
++concept HasMemberSize = requires(T t) { t.size(); };
++
++#endif // TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_CONCEPTS_H
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/types.h b/libcxx/test/std/ranges/range.adaptors/range.enumerate/types.h
+new file mode 100644
+index 0000000000000..7a048cbad8f30
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/types.h
+@@ -0,0 +1,135 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_H
++#define TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_H
++
++#include <cstddef>
++#include <ranges>
++#include <tuple>
++
++#include "test_iterators.h"
++#include "test_macros.h"
++
++// Types
++
++template <typename T, typename DifferenceT = std::ptrdiff_t>
++using ValueType = std::tuple<DifferenceT, T>;
++
++struct RangeView : std::ranges::view_base {
++  using Iterator = cpp20_input_iterator<int*>;
++  using Sentinel = sentinel_wrapper<Iterator>;
++
++  constexpr explicit RangeView(int* b, int* e) : begin_(b), end_(e) {}
++  constexpr RangeView(RangeView const& other) : begin_(other.begin_), end_(other.end_), wasCopyInitialized(true) {}
++  constexpr RangeView(RangeView&& other) : begin_(other.begin_), end_(other.end_), wasMoveInitialized(true) {}
++  RangeView& operator=(RangeView const&) = default;
++  RangeView& operator=(RangeView&&)      = default;
++
++  constexpr int* begin() const { return begin_; }
++  constexpr int* end() const { return end_; }
++
++  int* begin_;
++  int* end_;
++
++  bool wasCopyInitialized = false;
++  bool wasMoveInitialized = false;
++};
++
++LIBCPP_STATIC_ASSERT(std::ranges::__range_with_movable_references<RangeView>);
++static_assert(std::ranges::view<RangeView>);
++
++struct MinimalDefaultConstructedView : std::ranges::view_base {
++  MinimalDefaultConstructedView() = default;
++
++  forward_iterator<int*> begin() const;
++  sentinel_wrapper<forward_iterator<int*>> end() const;
++};
++
++static_assert(std::ranges::view<MinimalDefaultConstructedView>);
++
++template <class Iterator, class Sentinel>
++struct MinimalView : std::ranges::view_base {
++  constexpr explicit MinimalView(Iterator it, Sentinel sent) : it_(base(std::move(it))), sent_(base(std::move(sent))) {}
++
++  MinimalView(MinimalView&&)            = default;
++  MinimalView& operator=(MinimalView&&) = default;
++
++  constexpr Iterator begin() const { return Iterator(it_); }
++  constexpr Sentinel end() const { return Sentinel(sent_); }
++
++private:
++  decltype(base(std::declval<Iterator>())) it_;
++  decltype(base(std::declval<Sentinel>())) sent_;
++};
++
++static_assert(
++    std::ranges::view< MinimalView<cpp17_input_iterator<int*>, sentinel_wrapper<cpp17_input_iterator<int*>>>>);
++
++struct NotInvocable {};
++
++static_assert(!std::invocable<NotInvocable>);
++
++struct NotAView {};
++
++static_assert(!std::ranges::view<NotAView>);
++
++struct NotAViewRange {
++  using Iterator = cpp20_input_iterator<int*>;
++  using Sentinel = sentinel_wrapper<Iterator>;
++
++  NotAViewRange() = default;
++  constexpr explicit NotAViewRange(int* b, int* e) : begin_(b), end_(e) {}
++  constexpr NotAViewRange(NotAViewRange const& other) = default;
++  constexpr NotAViewRange(NotAViewRange&& other)      = default;
++  NotAViewRange& operator=(NotAViewRange const&)      = default;
++  NotAViewRange& operator=(NotAViewRange&&)           = default;
++
++  constexpr int* begin() const { return begin_; }
++  constexpr int* end() const { return end_; }
++
++  int* begin_;
++  int* end_;
++};
++
++static_assert(std::ranges::range<NotAViewRange>);
++static_assert(!std::ranges::view<NotAViewRange>);
++
++template <bool IsNoexcept>
++class MaybeNoexceptIterMoveInputIterator {
++  int* it_;
++
++public:
++  using iterator_category = std::input_iterator_tag;
++  using value_type        = int;
++  using difference_type   = typename std::iterator_traits<int*>::difference_type;
++  using pointer           = int*;
++  using reference         = int&;
++
++  MaybeNoexceptIterMoveInputIterator() = default;
++  explicit constexpr MaybeNoexceptIterMoveInputIterator(int* it) : it_(it) {}
++
++  friend constexpr decltype(auto) iter_move(const MaybeNoexceptIterMoveInputIterator& it) noexcept(IsNoexcept) {
++    return std::ranges::iter_move(it.it_);
++  }
++
++  friend constexpr int* base(const MaybeNoexceptIterMoveInputIterator& i) { return i.it_; }
++
++  constexpr reference operator*() const { return *it_; }
++  constexpr MaybeNoexceptIterMoveInputIterator& operator++() {
++    ++it_;
++    return *this;
++  }
++  constexpr MaybeNoexceptIterMoveInputIterator operator++(int) {
++    MaybeNoexceptIterMoveInputIterator tmp(*this);
++    ++(*this);
++    return tmp;
++  }
++};
++
++#endif // TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_H
+diff --git a/libcxx/test/std/ranges/range.adaptors/range.enumerate/types_iterators.h b/libcxx/test/std/ranges/range.adaptors/range.enumerate/types_iterators.h
+new file mode 100644
+index 0000000000000..231e8f68dbb93
+--- /dev/null
++++ b/libcxx/test/std/ranges/range.adaptors/range.enumerate/types_iterators.h
+@@ -0,0 +1,109 @@
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_ITERATORS_H
++#define TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_ITERATORS_H
++
++#include "types.h"
++
++// Iterators & Sentinels
++
++template <bool Const>
++struct Iterator {
++  using value_type       = int;
++  using difference_type  = std::ptrdiff_t;
++  using iterator_concept = std::input_iterator_tag;
++
++  constexpr decltype(auto) operator*() const { return *it_; }
++  constexpr Iterator& operator++() {
++    ++it_;
++
++    return *this;
++  }
++  constexpr void operator++(int) { ++it_; }
++
++  std::tuple<std::ptrdiff_t, int>* it_;
++};
++
++template <bool Const>
++struct Sentinel {
++  constexpr bool operator==(const Iterator<Const>& i) const { return i.it_ == end_; }
++
++  std::tuple<std::ptrdiff_t, int>* end_;
++};
++
++template <bool Const>
++struct CrossComparableSentinel {
++  template <bool C>
++  constexpr bool operator==(const Iterator<C>& i) const {
++    return i.it_ == end_;
++  }
++
++  std::tuple<std::ptrdiff_t, int>* end_;
++};
++
++template <bool Const>
++struct SizedSentinel {
++  constexpr bool operator==(const Iterator<Const>& i) const { return i.it_ == end_; }
++
++  friend constexpr auto operator-(const SizedSentinel& st, const Iterator<Const>& it) { return st.end_ - it.it_; }
++
++  friend constexpr auto operator-(const Iterator<Const>& it, const SizedSentinel& st) { return it.it_ - st.end_; }
++
++  int* end_;
++};
++
++template <bool Const>
++struct CrossSizedSentinel {
++  template <bool C>
++  constexpr bool operator==(const Iterator<C>& i) const {
++    return i.it_ == end_;
++  }
++
++  template <bool C>
++  friend constexpr auto operator-(const CrossSizedSentinel& st, const Iterator<C>& it) {
++    return st.end_ - it.it_;
++  }
++
++  template <bool C>
++  friend constexpr auto operator-(const Iterator<C>& it, const CrossSizedSentinel& st) {
++    return it.it_ - st.end_;
++  }
++
++  int* end_;
++};
++
++// Views
++
++template <template <bool> class It, template <bool> class St>
++struct BufferView : std::ranges::view_base {
++  template <std::size_t N>
++  constexpr BufferView(int (&b)[N]) : buffer_(b), size_(N) {}
++
++  template <std::size_t N>
++  constexpr BufferView(std::array<int, N>& arr) : buffer_(arr.data()), size_(N) {}
++
++  using iterator       = It<false>;
++  using sentinel       = St<false>;
++  using const_iterator = It<true>;
++  using const_sentinel = St<true>;
++
++  using difference_type = int;
++  using iterator_type   = std::tuple<std::ptrdiff_t, int>;
++
++  constexpr iterator begin() { return iterator_type{pos_, buffer_}; }
++  constexpr const_iterator begin() const { return {iterator_type{pos_, buffer_}}; }
++  constexpr sentinel end() { return sentinel{buffer_ + size_}; }
++  constexpr const_sentinel end() const { return const_sentinel{pos_, buffer_ + size_}; }
++
++  std::ptrdiff_t pos_;
++  int* buffer_;
++  std::size_t size_;
++};
++
++#endif // TEST_STD_RANGES_RANGE_ADAPTORS_RANGE_ENUMERATE_TYPES_ITERATORS_H
+diff --git a/libcxx/utils/generate_feature_test_macro_components.py b/libcxx/utils/generate_feature_test_macro_components.py
+index f2b8d55c0e11b..5d84391c932ce 100755
+--- a/libcxx/utils/generate_feature_test_macro_components.py
++++ b/libcxx/utils/generate_feature_test_macro_components.py
+@@ -960,6 +960,11 @@ def add_version_header(tc):
+             "values": {"c++23": 202207},
+             "headers": ["algorithm"],
+         },
++        {
++            "name": "__cpp_lib_ranges_enumerate",
++            "values": {"c++23": 202302},
++            "headers": ["ranges"],
++        },
+         {
+             "name": "__cpp_lib_ranges_iota",
+             "values": {"c++23": 202202},
